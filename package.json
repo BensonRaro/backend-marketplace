@@ -12,7 +12,8 @@
     "prisma:push": "prisma db push",
     "prisma:studio": "prisma studio",
     "db:push": "prisma db push",
-    "db:generate": "prisma generate"
+    "db:generate": "prisma generate",
+    "postinstall": "prisma generate"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
