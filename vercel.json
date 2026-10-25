@@ -1,21 +1,12 @@
 {
-  "framework": "express",
-  "functions": {
-    "src/server.ts": {
-      "runtime": "nodejs20.x"
-    }
-  },
-  "headers": [
+  "version": 2,
+  "builds": [
     {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" },
-        { "key": "Pragma", "value": "no-cache" },
-        { "key": "Expires", "value": "0" }
-      ]
+      "src": "src/server.ts",
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": ["src/**/*"]
+      }
     }
-  ],
-  "redirects": [
-    { "source": "/api", "destination": "/api/health", "permanent": false }
   ]
 }
