@@ -1,0 +1,21 @@
+{
+  "framework": "express",
+  "functions": {
+    "src/server.ts": {
+      "runtime": "nodejs20"
+    }
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" },
+        { "key": "Pragma", "value": "no-cache" },
+        { "key": "Expires", "value": "0" }
+      ]
+    }
+  ],
+  "redirects": [
+    { "source": "/api", "destination": "/api/health", "permanent": false }
+  ]
+}

@@ -1,0 +1,336 @@
+// Prisma schema for freelance marketplace — MongoDB via Prisma ORM
+// Quickstart: set DATABASE_URL + MONGODB_URL, then `bunx prisma generate` and `bunx prisma db push`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  client
+  freelancer
+  admin
+}
+
+enum BudgetType {
+  fixed
+  hourly
+}
+
+enum ProposalStatus {
+  pending
+  accepted
+  rejected
+}
+
+enum MilestoneStatus {
+  unfunded
+  funded
+  submitted
+  approved
+  disputed
+  released
+}
+
+// AI cover-letter job state — queued by the bid form, filled in by Inngest, polled by the UI
+enum DraftStatus {
+  queued
+  ready
+  failed
+}
+
+model User {
+  id                    String    @id @default(auto()) @map("_id") @db.ObjectId
+  name                  String?
+  email                 String?   @unique
+  emailVerified         DateTime?
+  image                 String?
+  password              String? // hashed for Credentials; null for OAuth
+  role                  Role      @default(client)
+  onboardingCompleted   Boolean   @default(false)
+  onboardingCompletedAt DateTime?
+  // Stripe Connect verification (freelancer — to receive payouts)
+  stripeAccountId         String?
+  stripeDetailsSubmitted  Boolean   @default(false)
+  stripeChargesEnabled    Boolean   @default(false)
+  stripePayoutsEnabled    Boolean   @default(false)
+  stripeVerified          Boolean   @default(false)
+  stripeVerifiedAt        DateTime?
+  // Stripe Customer verification (client — to make payments via saved card)
+  stripeCustomerId        String?
+  stripePaymentMethodId   String?
+  stripeCardBrand         String?
+  stripeCardLast4         String?
+  stripePaymentVerified   Boolean   @default(false)
+  stripePaymentVerifiedAt DateTime?
+  // Admin moderation — banned accounts lose write access + public visibility
+  isBanned                Boolean   @default(false)
+  banReason               String?
+  bannedAt                DateTime?
+  bannedBy                String?   @db.ObjectId
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  // Auth.js relations
+  accounts Account[]
+  sessions Session[]
+
+  // Freelance marketplace relations
+  clientProfile           ClientProfile?
+  freelancerProfile       FreelancerProfile?
+  jobPostings             JobPosting[]       @relation("ClientJobs")
+  proposals               Proposal[]         @relation("FreelancerProposals")
+  contractsAsClient       Contract[]        @relation("ClientContracts")
+  contractsAsFreelancer   Contract[]        @relation("FreelancerContracts")
+  reviewsGiven            Review[]           @relation("ReviewAuthor")
+  reviewsReceived         Review[]           @relation("ReviewTarget")
+  notifications           Notification[]
+  messagesSent            Message[]          @relation("SentMessages")
+  proposalDrafts          ProposalDraft[]
+}
+
+// Auth.js adapter models — MongoDB (per https://authjs.dev/getting-started/adapters/prisma)
+model Account {
+  id                String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String  @db.ObjectId
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.String
+  access_token      String? @db.String
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.String
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  sessionToken String   @unique
+  userId       String   @db.ObjectId
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model FreelancerProfile {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @unique @db.ObjectId
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String?
+  bio         String?
+  skills      String[] // skill tags
+  hourlyRate  Int?     // cents per hour
+  portfolio   String? // JSON or URL
+  location    String?
+  website     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ClientProfile {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @unique @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company   String?
+  bio       String?
+  location  String?
+  website   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Category {
+  id   String @id @default(auto()) @map("_id") @db.ObjectId
+  name String @unique
+  slug String @unique
+  jobs JobPosting[]
+}
+
+model JobPosting {
+  id          String     @id @default(auto()) @map("_id") @db.ObjectId
+  title       String
+  description String
+  budgetType  BudgetType
+  budget      Int        // cents (fixed total or hourly rate)
+  skills      String[]
+  categoryId  String?    @db.ObjectId
+  category    Category?  @relation(fields: [categoryId], references: [id])
+  clientId    String     @db.ObjectId
+  client      User       @relation("ClientJobs", fields: [clientId], references: [id], onDelete: Cascade)
+  proposals   Proposal[]
+  recommendations ProposalRecommendation[] // AI shortlist rows for this job
+  drafts      ProposalDraft[] // AI cover-letter jobs for this posting
+  contract    Contract?
+  milestones  Milestone[] @relation("JobMilestones") // client-defined, funded upfront via escrow
+  // Whole-job escrow (alternative to per-milestone funding; only unfunded/funded used)
+  // No @unique here: MongoDB unique indexes reject multiple nulls on existing docs
+  escrowStatus            MilestoneStatus @default(unfunded)
+  stripeCheckoutSessionId String?
+  stripePaymentIntentId   String?
+  fundedAt                DateTime?
+  isOpen      Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Proposal {
+  id          String         @id @default(auto()) @map("_id") @db.ObjectId
+  coverLetter String
+  bidAmount   Int            // cents
+  duration    Int?           // days estimate
+  status      ProposalStatus @default(pending)
+  jobId       String         @db.ObjectId
+  job         JobPosting     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  freelancerId String        @db.ObjectId
+  freelancer   User          @relation("FreelancerProposals", fields: [freelancerId], references: [id], onDelete: Cascade)
+  recommendation ProposalRecommendation? // AI fit score written by the Inngest job
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@unique([jobId, freelancerId]) // one proposal per freelancer per job
+}
+
+// AI ranking of one proposal against its job — written by the Inngest recommendation job,
+// read by the client shortlist (score 0-100 + why). One row per proposal.
+model ProposalRecommendation {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  jobId      String   @db.ObjectId
+  job        JobPosting @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  proposalId String   @unique @db.ObjectId
+  proposal   Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  score      Int      // 0-100 fit score
+  summary    String?  // one-paragraph verdict
+  strengths  String[]
+  concerns   String[]
+  model      String   // OpenRouter model that produced this row
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// AI cover-letter draft — one row per freelancer + job; Inngest writes the text, the form polls it.
+// Nothing here is sent to the client: the freelancer copies it into the bid form and submits it.
+model ProposalDraft {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String      @db.ObjectId
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId       String      @db.ObjectId
+  job         JobPosting  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  status      DraftStatus @default(queued)
+  coverLetter String?
+  model       String?     // OpenRouter model that actually answered
+  error       String?
+  errorCode   String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([userId, jobId]) // one live draft per freelancer per job
+}
+
+model Contract {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  jobId        String    @unique @db.ObjectId
+  job          JobPosting @relation(fields: [jobId], references: [id])
+  proposalId   String    @unique @db.ObjectId
+  clientId     String    @db.ObjectId
+  client       User      @relation("ClientContracts", fields: [clientId], references: [id])
+  freelancerId String    @db.ObjectId
+  freelancer   User      @relation("FreelancerContracts", fields: [freelancerId], references: [id])
+  milestones   Milestone[]
+  messages     Message[]   // contract thread — client + freelancer conversation
+  isCompleted  Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Milestone {
+  id          String          @id @default(auto()) @map("_id") @db.ObjectId
+  // Funded upfront on the job; moved to contract on hire (contract flow sets contractId later)
+  contractId  String?         @db.ObjectId
+  contract    Contract?       @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  jobId       String?         @db.ObjectId
+  job         JobPosting?     @relation("JobMilestones", fields: [jobId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  amount      Int             // cents — must match Stripe amount before webhook trusts update
+  status      MilestoneStatus @default(unfunded)
+  // No @unique: MongoDB unique indexes reject multiple nulls, and milestones
+  // are legitimately created without Stripe ids (unfunded drafts, mirrors)
+  stripeCheckoutSessionId String?
+  stripePaymentIntentId String?
+  // Work submission — freelancer deliverables (file URLs +/or links) + note
+  deliverables   String[]
+  submissionNote String?
+  submittedAt    DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+}
+
+model Review {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  rating     Int      // 1-5
+  comment    String?
+  authorId   String   @db.ObjectId
+  author     User     @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  targetId   String   @db.ObjectId
+  target     User     @relation("ReviewTarget", fields: [targetId], references: [id], onDelete: Cascade)
+  contractId String   @db.ObjectId
+  createdAt  DateTime @default(now())
+
+  @@unique([authorId, contractId]) // one review per author per contract
+}
+
+model ActivityLog {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  actorId   String?  @db.ObjectId
+  action    String   // e.g. proposal.accepted, milestone.funded
+  entity    String   // e.g. Proposal, Milestone
+  entityId  String   @db.ObjectId
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+}
+
+// Per-user inbox — every SSE event is persisted here, dropdown reads this
+model Notification {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // e.g. proposal.submitted, milestone.released
+  title     String
+  message   String
+  entity    String?  // e.g. Proposal, Contract, Milestone
+  entityId  String?  @db.ObjectId
+  data      Json?
+  read      Boolean  @default(false)
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+}
+
+// Contract thread message — text and/or file attachments (UploadThing URLs)
+model Message {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  contractId  String   @db.ObjectId
+  contract    Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  senderId    String   @db.ObjectId
+  sender      User     @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  body        String   @default("")
+  attachments String[] // UploadThing file URLs shared in chat
+  createdAt   DateTime @default(now())
+}
