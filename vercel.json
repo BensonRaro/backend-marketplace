@@ -2,7 +2,7 @@
   "framework": "express",
   "functions": {
     "src/server.ts": {
-      "runtime": "nodejs20"
+      "runtime": "nodejs20.x"
     }
   },
   "headers": [
